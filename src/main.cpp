@@ -11,10 +11,17 @@
 #include <ESPAsyncWebServer.h>
 #include <Adafruit_Sensor.h>
 #include <DHT.h>
+#include <PubSubClient.h>
 
 // Replace with your network credentials
 const char* ssid = "MVT-TONY";
 const char* password = "<tony0889>";
+
+
+const char* mqtt_user = "esp32_sensor";  
+const char* mqtt_pass = "123";    
+const char* mqtt_server = "192.168.0.11"; // IP do laptop servidor
+
 
 #define DHTPIN 4     // Digital pin connected to the DHT sensor
 
@@ -39,20 +46,9 @@ unsigned long previousMillis = 0;    // will store last time DHT was updated
 // Updates DHT readings every 10 seconds
 const long interval = 10000;  
 
-/*const char index_html[] PROGMEM = R"rawliteral(
-  <!DOCTYPE html>
-  <html>
-    <head>
-      <title>Página ESP8266</title>
-      <meta charset="UTF-8">
-    </head>
-    <body>
-      <h1>Olá! Esta é a página do ESP8266 😄</h1>
-      <p>Está funcionando!</p>
-    </body>
-  </html>
-  )rawliteral";
-*/
+WiFiClient espClient;
+PubSubClient client(espClient);
+
 
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE HTML><html>
@@ -161,6 +157,21 @@ void setup(){
 
   // Start server
   server.begin();
+
+  client.setServer(mqtt_server, 1883);
+  while (!client.connected()) {
+    Serial.print("Tentando conectar ao MQTT...");
+    if (client.connect("esp32_sensor", mqtt_user, mqtt_pass)) {
+      Serial.println("Conectado!");
+    } else {
+      Serial.print("falhou, rc=");
+      Serial.print(client.state());
+      Serial.println(" tentando novamente em 5s");
+      delay(5000);
+    }
+  }
+  // Print ESP8266 Local IP Address
+  Serial.println(WiFi.localIP());
 }
  
 void loop(){  
@@ -170,9 +181,7 @@ void loop(){
     previousMillis = currentMillis;
     // Read temperature as Celsius (the default)
     float newT = dht.readTemperature();
-    // Read temperature as Fahrenheit (isFahrenheit = true)
-    //float newT = dht.readTemperature(true);
-    // if temperature read failed, don't change t value
+
     if (isnan(newT)) {
       Serial.println("Failed to read from DHT sensor!");
     }
@@ -190,5 +199,7 @@ void loop(){
       h = newH;
       Serial.println(h);
     }
+    String payload = "{\"temperature\": " + String(t) + ", \"humidity\": " + String(h) + "}";
+    client.publish("casa/sala/sensor", payload.c_str());
   }
 }
