@@ -1,8 +1,3 @@
-/*********
-  Rui Santos
-  Complete project details at https://randomnerdtutorials.com/esp8266-dht11dht22-temperature-and-humidity-web-server-with-arduino-ide/
-*********/
-
 // Import required libraries
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
@@ -17,11 +12,9 @@
 const char* ssid = "MVT-TONY";
 const char* password = "<tony0889>";
 
-
 const char* mqtt_user = "esp32_sensor";  
 const char* mqtt_pass = "123";    
 const char* mqtt_server = "192.168.0.11"; // IP do laptop servidor
-
 
 #define DHTPIN 4     // Digital pin connected to the DHT sensor
 
@@ -48,7 +41,6 @@ const long interval = 10000;
 
 WiFiClient espClient;
 PubSubClient client(espClient);
-
 
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE HTML><html>
@@ -112,10 +104,6 @@ setInterval(function ( ) {
 </script>
 </html>)rawliteral";
 
-
-
-
-
 // Replaces placeholder with DHT values
 String processor(const String& var){
   //Serial.println(var);
@@ -128,23 +116,50 @@ String processor(const String& var){
   return String();
 }
 
-void setup(){
-  // Serial port for debugging purposes
+void reconnectMQTT() {
+  // Loop até conseguir conectar
+  while (!client.connected()) {
+    Serial.print("Tentando conectar ao MQTT...");
+    if (client.connect("esp8266_sensor", mqtt_user, mqtt_pass)) {
+      Serial.println("Conectado ao MQTT!");
+    } else {
+      Serial.print("Falhou, rc=");
+      Serial.print(client.state());
+      Serial.println(" tentando novamente em 5s");
+      delay(5000);
+    }
+  }
+}
+
+void reconnectWiFi() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Reconectando WiFi...");
+    WiFi.disconnect();
+    WiFi.begin(ssid, password);
+    unsigned long startAttempt = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 10000) {
+      delay(500);
+      Serial.print(".");
+    }
+    Serial.println(WiFi.localIP());
+  }
+}
+
+void setup() {
   Serial.begin(115200);
   dht.begin();
-  
-  // Connect to Wi-Fi
-  WiFi.begin(ssid, password);
-  Serial.println("Connecting to WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(1000);
-    Serial.println(".");
-  }
 
-  // Print ESP8266 Local IP Address
+  // Conexão WiFi
+  WiFi.begin(ssid, password);
+  Serial.print("Conectando-se ao WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi conectado!");
   Serial.println(WiFi.localIP());
 
-  // Route for root / web page
+  // Servidor web
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send_P(200, "text/html", index_html, processor);
   });
@@ -154,52 +169,33 @@ void setup(){
   server.on("/humidity", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "text/plain", String(h).c_str());
   });
-
-  // Start server
   server.begin();
 
   client.setServer(mqtt_server, 1883);
-  while (!client.connected()) {
-    Serial.print("Tentando conectar ao MQTT...");
-    if (client.connect("esp32_sensor", mqtt_user, mqtt_pass)) {
-      Serial.println("Conectado!");
-    } else {
-      Serial.print("falhou, rc=");
-      Serial.print(client.state());
-      Serial.println(" tentando novamente em 5s");
-      delay(5000);
-    }
-  }
-  // Print ESP8266 Local IP Address
-  Serial.println(WiFi.localIP());
+  reconnectMQTT();
 }
+
  
-void loop(){  
+void loop() {
+  // Mantém conexões vivas
+  reconnectWiFi();
+  if (!client.connected()) reconnectMQTT();
+  client.loop();
+
   unsigned long currentMillis = millis();
   if (currentMillis - previousMillis >= interval) {
-    // save the last time you updated the DHT values
     previousMillis = currentMillis;
-    // Read temperature as Celsius (the default)
-    float newT = dht.readTemperature();
 
-    if (isnan(newT)) {
-      Serial.println("Failed to read from DHT sensor!");
-    }
-    else {
-      t = newT;
-      Serial.println(t);
-    }
-    // Read Humidity
+    // Leitura DHT
+    float newT = dht.readTemperature();
     float newH = dht.readHumidity();
-    // if humidity read failed, don't change h value 
-    if (isnan(newH)) {
-      Serial.println("Failed to read from DHT sensor!");
-    }
-    else {
-      h = newH;
-      Serial.println(h);
-    }
-    String payload = "{\"temperature\": " + String(t) + ", \"humidity\": " + String(h) + "}";
-    client.publish("casa/sala/sensor", payload.c_str());
+    if (!isnan(newT)) t = newT;
+    if (!isnan(newH)) h = newH;
+
+    Serial.printf("Temp: %.2f °C | Umid: %.2f %%\n", t, h);
+
+    // Publica no MQTT (com retain)
+    String payload = "{\"temperature\": " + String(t, 2) + ", \"humidity\": " + String(h, 2) + "}";
+    client.publish("casa/sala/sensor", payload.c_str(), true);
   }
 }
