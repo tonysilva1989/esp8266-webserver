@@ -6,6 +6,7 @@
 #include <ESPAsyncWebServer.h>
 #include <Adafruit_Sensor.h>
 #include <DHT.h>
+#include <Adafruit_BMP085.h>  // ---- BMP180 ----
 #include <PubSubClient.h>
 
 // Replace with your network credentials
@@ -16,116 +17,60 @@ const char* mqtt_user = "esp32_sensor";
 const char* mqtt_pass = "123";    
 const char* mqtt_server = "192.168.0.11"; // IP do laptop servidor
 
-#define DHTPIN 4     // Digital pin connected to the DHT sensor
-
-// Uncomment the type of sensor in use:
-#define DHTTYPE    DHT11     // DHT 11
-//#define DHTTYPE    DHT22     // DHT 22 (AM2302)
-//#define DHTTYPE    DHT21     // DHT 21 (AM2301)
+#define DHTPIN 12     // D6 Digital pin connected to the DHT sensor
+#define DHTTYPE DHT11
 
 DHT dht(DHTPIN, DHTTYPE);
+Adafruit_BMP085 bmp;  // ---- BMP180 ----
 
-// current temperature & humidity, updated in loop()
+// current sensor readings
 float t = 0.0;
 float h = 0.0;
+float p = 0.0;  // pressure (hPa)
+float alt = 0.0; // altitude (m)
 
-// Create AsyncWebServer object on port 80
 AsyncWebServer server(80);
 
-// Generally, you should use "unsigned long" for variables that hold time
-// The value will quickly become too large for an int to store
-unsigned long previousMillis = 0;    // will store last time DHT was updated
-
-// Updates DHT readings every 10 seconds
-const long interval = 10000;  
+unsigned long previousMillis = 0;
+const long interval = 10000;  // 10s update
 
 WiFiClient espClient;
 PubSubClient client(espClient);
 
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE HTML><html>
-<head>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.7.2/css/all.css" integrity="sha384-fnmOCqbTlWIlj8LyTjo7mOUStjsKC4pOpQbqyi7RrhN7udi9RwhKkMHpvLbHG9Sr" crossorigin="anonymous">
-  <style>
-    html {
-     font-family: Arial;
-     display: inline-block;
-     margin: 0px auto;
-     text-align: center;
-    }
-    h2 { font-size: 3.0rem; }
-    p { font-size: 3.0rem; }
-    .units { font-size: 1.2rem; }
-    .dht-labels{
-      font-size: 1.5rem;
-      vertical-align:middle;
-      padding-bottom: 15px;
-    }
-  </style>
+<head><meta name="viewport" content="width=device-width, initial-scale=1">
+<style>html{font-family:Arial;text-align:center;}</style>
 </head>
 <body>
-  <h2>ESP8266 DHT Server</h2>
-  <p>
-    <i class="fas fa-thermometer-half" style="color:#059e8a;"></i> 
-    <span class="dht-labels">Temperature</span> 
-    <span id="temperature">%TEMPERATURE%</span>
-    <sup class="units">&deg;C</sup>
-  </p>
-  <p>
-    <i class="fas fa-tint" style="color:#00add6;"></i> 
-    <span class="dht-labels">Humidity</span>
-    <span id="humidity">%HUMIDITY%</span>
-    <sup class="units">%</sup>
-  </p>
+  <h2>ESP8266 Weather Server</h2>
+  <p>Temp: <span id="temperature">%TEMPERATURE%</span> °C</p>
+  <p>Humidity: <span id="humidity">%HUMIDITY%</span> %</p>
+  <p>Pressure: <span id="pressure">%PRESSURE%</span> hPa</p>
+  <p>Altitude: <span id="altitude">%ALTITUDE%</span> m</p>
 </body>
 <script>
-setInterval(function ( ) {
-  var xhttp = new XMLHttpRequest();
-  xhttp.onreadystatechange = function() {
-    if (this.readyState == 4 && this.status == 200) {
-      document.getElementById("temperature").innerHTML = this.responseText;
-    }
-  };
-  xhttp.open("GET", "/temperature", true);
-  xhttp.send();
-}, 10000 ) ;
-
-setInterval(function ( ) {
-  var xhttp = new XMLHttpRequest();
-  xhttp.onreadystatechange = function() {
-    if (this.readyState == 4 && this.status == 200) {
-      document.getElementById("humidity").innerHTML = this.responseText;
-    }
-  };
-  xhttp.open("GET", "/humidity", true);
-  xhttp.send();
-}, 10000 ) ;
+function update(id,url){fetch(url).then(r=>r.text()).then(t=>document.getElementById(id).innerHTML=t);}
+setInterval(()=>{update("temperature","/temperature");update("humidity","/humidity");update("pressure","/pressure");update("altitude","/altitude");},10000);
 </script>
 </html>)rawliteral";
 
-// Replaces placeholder with DHT values
+// Replaces placeholder with sensor values
 String processor(const String& var){
-  //Serial.println(var);
-  if(var == "TEMPERATURE"){
-    return String(t);
-  }
-  else if(var == "HUMIDITY"){
-    return String(h);
-  }
+  if(var == "TEMPERATURE") return String(t, 2);
+  if(var == "HUMIDITY") return String(h, 2);
+  if(var == "PRESSURE") return String(p, 2);
+  if(var == "ALTITUDE") return String(alt, 2);
   return String();
 }
 
 void reconnectMQTT() {
-  // Loop até conseguir conectar
   while (!client.connected()) {
-    Serial.print("Tentando conectar ao MQTT...");
+    Serial.print("Conectando ao MQTT...");
     if (client.connect("esp8266_sensor", mqtt_user, mqtt_pass)) {
-      Serial.println("Conectado ao MQTT!");
+      Serial.println("Conectado!");
     } else {
-      Serial.print("Falhou, rc=");
-      Serial.print(client.state());
-      Serial.println(" tentando novamente em 5s");
+      Serial.print("Falhou, rc="); Serial.println(client.state());
       delay(5000);
     }
   }
@@ -138,8 +83,7 @@ void reconnectWiFi() {
     WiFi.begin(ssid, password);
     unsigned long startAttempt = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 10000) {
-      delay(500);
-      Serial.print(".");
+      delay(500); Serial.print(".");
     }
     Serial.println(WiFi.localIP());
   }
@@ -149,35 +93,35 @@ void setup() {
   Serial.begin(115200);
   dht.begin();
 
-  // Conexão WiFi
-  WiFi.begin(ssid, password);
-  Serial.print("Conectando-se ao WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
+  // ---- BMP180 ----
+  if (!bmp.begin()) {
+    Serial.println("BMP180 não detectado! Verifique as conexões.");
+    while (1);
+  } else {
+    Serial.println("BMP180 inicializado!");
   }
+
+  WiFi.begin(ssid, password);
+  Serial.print("Conectando WiFi");
+  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
   Serial.println("\nWiFi conectado!");
   Serial.println(WiFi.localIP());
 
-  // Servidor web
+  // Web server routes
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send_P(200, "text/html", index_html, processor);
   });
-  server.on("/temperature", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(200, "text/plain", String(t).c_str());
-  });
-  server.on("/humidity", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(200, "text/plain", String(h).c_str());
-  });
+  server.on("/temperature", HTTP_GET, [](AsyncWebServerRequest *request){ request->send(200, "text/plain", String(t).c_str()); });
+  server.on("/humidity", HTTP_GET, [](AsyncWebServerRequest *request){ request->send(200, "text/plain", String(h).c_str()); });
+  server.on("/pressure", HTTP_GET, [](AsyncWebServerRequest *request){ request->send(200, "text/plain", String(p).c_str()); });
+  server.on("/altitude", HTTP_GET, [](AsyncWebServerRequest *request){ request->send(200, "text/plain", String(alt).c_str()); });
   server.begin();
 
   client.setServer(mqtt_server, 1883);
   reconnectMQTT();
 }
 
- 
 void loop() {
-  // Mantém conexões vivas
   reconnectWiFi();
   if (!client.connected()) reconnectMQTT();
   client.loop();
@@ -186,16 +130,22 @@ void loop() {
   if (currentMillis - previousMillis >= interval) {
     previousMillis = currentMillis;
 
-    // Leitura DHT
     float newT = dht.readTemperature();
     float newH = dht.readHumidity();
     if (!isnan(newT)) t = newT;
     if (!isnan(newH)) h = newH;
 
-    Serial.printf("Temp: %.2f °C | Umid: %.2f %%\n", t, h);
+    // ---- BMP180 readings ----
+    p = bmp.readPressure() / 100.0; // convert Pa to hPa
+    alt = bmp.readAltitude();       // meters (default sea level 1013.25 hPa)
 
-    // Publica no MQTT (com retain)
-    String payload = "{\"temperature\": " + String(t, 2) + ", \"humidity\": " + String(h, 2) + "}";
+    Serial.printf("Temp: %.2f°C | Umid: %.2f%% | Press: %.2f hPa | Alt: %.2f m\n", t, h, p, alt);
+
+    // MQTT publish
+    String payload = "{\"temperature\":" + String(t, 2) +
+                     ",\"humidity\":" + String(h, 2) +
+                     ",\"pressure\":" + String(p, 2) +
+                     ",\"altitude\":" + String(alt, 2) + "}";
     client.publish("casa/sala/sensor", payload.c_str(), true);
   }
 }
