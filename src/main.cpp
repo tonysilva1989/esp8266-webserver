@@ -20,12 +20,19 @@ const char* mqtt_server = "192.168.0.11"; // IP do laptop servidor
 #define DHTPIN 12     // D6 Digital pin connected to the DHT sensor
 #define DHTTYPE DHT11
 
+#define DHT22_PIN D5    // D6 Digital pin connected to the DHT sensor
+#define DHT22_TYPE DHT22
+
 DHT dht(DHTPIN, DHTTYPE);
+DHT dht22(DHT22_PIN, DHT22_TYPE);
+
 Adafruit_BMP085 bmp;  // ---- BMP180 ----
 
 // current sensor readings
 float t = 0.0;
 float h = 0.0;
+float t_dht22 = 0.0;
+float h_dht22 = 0.0;
 float p = 0.0;  // pressure (hPa)
 float alt = 0.0; // altitude (m)
 
@@ -78,7 +85,7 @@ void reconnectMQTT() {
 
 void reconnectWiFi() {
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Reconectando WiFi...");
+    Serial.println("Reconnecting WiFi...");
     WiFi.disconnect();
     WiFi.begin(ssid, password);
     unsigned long startAttempt = millis();
@@ -92,22 +99,23 @@ void reconnectWiFi() {
 void setup() {
   Serial.begin(115200);
   dht.begin();
+  dht22.begin();
 
-  // ---- BMP180 ----
+  // ---- BMP180 - Barometric sensor----
   if (!bmp.begin()) {
-    Serial.println("BMP180 não detectado! Verifique as conexões.");
+    Serial.println("BMP180 has not been detected! Please verify pin connectivity");
     while (1);
   } else {
-    Serial.println("BMP180 inicializado!");
+    Serial.println("BMP180 has been started!");
   }
 
   WiFi.begin(ssid, password);
-  Serial.print("Conectando WiFi");
+  Serial.print("Connecting to WiFi...");
   while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
-  Serial.println("\nWiFi conectado!");
+  Serial.println("\nWiFi connected!");
   Serial.println(WiFi.localIP());
 
-  // Web server routes
+  // Web server routes for metrics collection
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send_P(200, "text/html", index_html, processor);
   });
@@ -141,9 +149,18 @@ void loop() {
 
     Serial.printf("Temp: %.2f°C | Umid: %.2f%% | Press: %.2f hPa | Alt: %.2f m\n", t, h, p, alt);
 
-    // MQTT publish
+    newT = dht22.readTemperature();
+    newH = dht22.readHumidity();
+    if (!isnan(newT)) t_dht22 = newT;
+    if (!isnan(newH)) h_dht22 = newH;
+    
+    Serial.printf("Temp (DHT22): %.2f°C | Umid: %.2f%% \n", t_dht22, h_dht22);
+
+    // MQTT publish to broker
     String payload = "{\"temperature\":" + String(t, 2) +
                      ",\"humidity\":" + String(h, 2) +
+                     ",\"dht22_temperature\":" + String(t_dht22, 2) +
+                     ",\"dht22_humidity\":" + String(h_dht22, 2) +                     
                      ",\"pressure\":" + String(p, 2) +
                      ",\"altitude\":" + String(alt, 2) + "}";
     client.publish("casa/sala/sensor", payload.c_str(), true);
